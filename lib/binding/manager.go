@@ -116,8 +116,35 @@ func (b *Manager) generateTypescriptDefinitions() error {
 	for structname, methodList := range b.structList {
 		structname = strings.SplitN(structname, ".", 2)[1]
 		output.WriteString(fmt.Sprintf("interface %s {\n", structname))
-		for _, method := range methodList {
-			output.WriteString(fmt.Sprintf("\t%s(...args : any[]):Promise<any>\n", method))
+		for _, methodName := range methodList {
+			// Default values
+			args := "...args : any[]"
+			returnVal := "Promise<any>"
+			if method, ok := b.methods[methodName]; ok {
+				args = ""
+				// Create arg for every input
+				for index, input := range method.inputs {
+					args += fmt.Sprintf("arg%d: %s", index, b.getTypeScriptType(input))
+					if index != len(method.inputs)-1 {
+						args += ", "
+					}
+				}
+				// No promise returned if there's no return value
+				if len(method.returnTypes) == 0 {
+					returnVal = "void"
+				} else {
+					// Add return type to a Promise
+					for _, returnType := range method.returnTypes {
+						// Skip error since it doesn't affect method signature
+						if returnType.Name() == "error" {
+							continue
+						}
+						returnVal = fmt.Sprintf("Promise<%s>", b.getTypeScriptType(returnType))
+						break
+					}
+				}
+				output.WriteString(fmt.Sprintf("\t%s(%s): %s\n", method.Name, args, returnVal))
+			}
 		}
 		output.WriteString("}\n")
 	}
@@ -145,6 +172,41 @@ export {};`
 	dir := filepath.Dir(typescriptDefinitionFilename)
 	os.MkdirAll(dir, 0755)
 	return ioutil.WriteFile(typescriptDefinitionFilename, []byte(output.String()), 0755)
+}
+
+func (b *Manager) getTypeScriptType(typeOf reflect.Type) string {
+	isArray := false
+	if typeOf.Kind() == reflect.Slice || typeOf.Kind() == reflect.Array {
+		isArray = true
+		typeOf = typeOf.Elem()
+	}
+	if typeOf.Kind() == reflect.Ptr {
+		typeOf = typeOf.Elem()
+	}
+	tsType := ""
+	if typeOf.Kind() == reflect.Struct {
+		tsType = typeOf.Name()
+	} else {
+		tsType = b.getScalarTypeScriptType(typeOf.Kind())
+	}
+	if isArray {
+		tsType += "[]"
+	}
+	return tsType
+}
+
+func (b *Manager) getScalarTypeScriptType(kind reflect.Kind) string {
+	switch kind {
+	case reflect.Bool:
+		return "bool"
+	case reflect.String:
+		return "string"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Float32, reflect.Float64:
+		return "number"
+	default:
+		return "any"
+	}
 }
 
 // bind the given struct method
@@ -175,7 +237,7 @@ func (b *Manager) bindMethod(object interface{}) error {
 		fullMethodName := baseName + "." + methodName
 		method := reflect.ValueOf(object).MethodByName(methodName)
 
-		b.structList[actualName] = append(b.structList[actualName], methodName)
+		b.structList[actualName] = append(b.structList[actualName], fullMethodName)
 
 		// Skip unexported methods
 		if !unicode.IsUpper([]rune(methodName)[0]) {
